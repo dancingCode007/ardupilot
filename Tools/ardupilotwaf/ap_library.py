@@ -83,11 +83,18 @@ def ap_library(bld, library, vehicle):
     if common_tg and vehicle_tg:
         return
 
-    library_dir = bld.srcnode.find_dir('libraries/%s' % library)
+    if library.find('*') != -1:
+        # allow for wildcard patterns, used for submodules without direct waf support
+        library_dir = bld.srcnode.find_dir('.')
+        wildcard = library
+    else:
+        library_dir = bld.srcnode.find_dir('libraries/%s' % library)
+        wildcard = ap.SOURCE_EXTS + UTILITY_SOURCE_EXTS
+
     if not library_dir:
         bld.fatal('ap_library: %s not found' % library)
 
-    src = library_dir.ant_glob(ap.SOURCE_EXTS + UTILITY_SOURCE_EXTS)
+    src = library_dir.ant_glob(wildcard)
 
     if not common_tg:
         kw = dict(bld.env.AP_LIBRARIES_OBJECTS_KW)
@@ -133,6 +140,7 @@ class ap_library_check_headers(Task.Task):
     dispatched_headers = set()
     whitelist = (
         'libraries/AP_Vehicle/AP_Vehicle_Type.h',
+        'libraries/AP_Camera/AP_RunCam.h',
     )
     whitelist = tuple(os.path.join(*p.split('/')) for p in whitelist)
 
@@ -160,6 +168,7 @@ class ap_library_check_headers(Task.Task):
     def scan(self):
         r = []
         self.headers = []
+
         srcnode_path = self.generator.bld.srcnode.abspath()
 
         # force dependency scan, if necessary
@@ -189,6 +198,9 @@ class ap_library_check_headers(Task.Task):
 @after_method('process_source')
 def ap_library_register_for_check(self):
     if not hasattr(self, 'compiled_tasks'):
+        return
+
+    if not self.env.ENABLE_HEADER_CHECKS:
         return
 
     for t in self.compiled_tasks:

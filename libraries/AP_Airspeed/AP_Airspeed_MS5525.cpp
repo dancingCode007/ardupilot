@@ -18,12 +18,15 @@
  */
 #include "AP_Airspeed_MS5525.h"
 
+#include <stdio.h>
+#include <utility>
+
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
 #include <AP_HAL/I2CDevice.h>
+#include <AP_HAL/utility/sparse-endian.h>
 #include <AP_Math/AP_Math.h>
-#include <stdio.h>
-#include <utility>
+#include <AP_Math/crc.h>
 
 extern const AP_HAL::HAL &hal;
 
@@ -49,9 +52,10 @@ extern const AP_HAL::HAL &hal;
 #define REG_CONVERT_PRESSURE    REG_CONVERT_D1_OSR_1024
 #define REG_CONVERT_TEMPERATURE REG_CONVERT_D2_OSR_1024
 
-AP_Airspeed_MS5525::AP_Airspeed_MS5525(AP_Airspeed &_frontend) :
-    AP_Airspeed_Backend(_frontend)
+AP_Airspeed_MS5525::AP_Airspeed_MS5525(AP_Airspeed &_frontend, uint8_t _instance, MS5525_ADDR address) :
+    AP_Airspeed_Backend(_frontend, _instance)
 {
+    _address = address;
 }
 
 // probe and initialise the sensor
@@ -60,13 +64,14 @@ bool AP_Airspeed_MS5525::init()
     const uint8_t addresses[] = { MS5525D0_I2C_ADDR_1, MS5525D0_I2C_ADDR_2 };
     bool found = false;
     for (uint8_t i=0; i<ARRAY_SIZE(addresses); i++) {
+        if (_address != MS5525_ADDR_AUTO && i != (uint8_t)_address) {
+            continue;
+        }
         dev = hal.i2c_mgr->get_device(get_bus(), addresses[i]);
         if (!dev) {
             continue;
         }
-        if (!dev->get_semaphore()->take(0)) {
-            continue;
-        }
+        dev->get_semaphore()->take_blocking();
 
         // lots of retries during probe
         dev->set_retries(5);
@@ -88,6 +93,7 @@ bool AP_Airspeed_MS5525::init()
     uint8_t reg = REG_CONVERT_TEMPERATURE;
     dev->transfer(&reg, 1, nullptr, 0);
     state = 0;
+    command_send_us = AP_HAL::micros();
 
     // drop to 2 retries for runtime
     dev->set_retries(2);
@@ -96,7 +102,7 @@ bool AP_Airspeed_MS5525::init()
 
     // read at 80Hz
     dev->register_periodic_callback(1000000UL/80U,
-                                    FUNCTOR_BIND_MEMBER(&AP_Airspeed_MS5525::timer, bool));
+                                    FUNCTOR_BIND_MEMBER(&AP_Airspeed_MS5525::timer, void));
     return true;
 }
 
@@ -106,27 +112,7 @@ bool AP_Airspeed_MS5525::init()
  */
 uint16_t AP_Airspeed_MS5525::crc4_prom(void)
 {
-    uint16_t n_rem = 0;
-    uint8_t n_bit;
-
-    for (uint8_t cnt = 0; cnt < sizeof(prom); cnt++) {
-        /* uneven bytes */
-        if (cnt & 1) {
-            n_rem ^= (uint8_t)((prom[cnt >> 1]) & 0x00FF);
-        } else {
-            n_rem ^= (uint8_t)(prom[cnt >> 1] >> 8);
-        }
-
-        for (n_bit = 8; n_bit > 0; n_bit--) {
-            if (n_rem & 0x8000) {
-                n_rem = (n_rem << 1) ^ 0x3000;
-            } else {
-                n_rem = (n_rem << 1);
-            }
-        }
-    }
-
-    return (n_rem >> 12) & 0xF;
+    return crc_crc4(prom);
 }
 
 bool AP_Airspeed_MS5525::read_prom(void)
@@ -140,9 +126,12 @@ bool AP_Airspeed_MS5525::read_prom(void)
 
     bool all_zero = true;
     for (uint8_t i = 0; i < 8; i++) {
-        if (!dev->read_uint16_be(REG_PROM_BASE+i*2, prom[i])) {
+        be16_t val;
+        if (!dev->read_registers(REG_PROM_BASE+i*2, (uint8_t *) &val,
+                                 sizeof(uint16_t))) {
             return false;
         }
+        prom[i] = be16toh(val);
         if (prom[i] != 0) {
             all_zero = false;
         }
@@ -208,79 +197,102 @@ void AP_Airspeed_MS5525::calculate(void)
     }
 #endif
     
-    if (sem->take(0)) {
-        pressure_sum += P_Pa;
-        temperature_sum += Temp_C;
-        press_count++;
-        temp_count++;
-        last_sample_time_ms = AP_HAL::millis();
-        sem->give();
-    }
+    WITH_SEMAPHORE(sem);
+
+    pressure_sum += P_Pa;
+    temperature_sum += Temp_C;
+    press_count++;
+    temp_count++;
+    last_sample_time_ms = AP_HAL::millis();
 }
 
-// 50Hz timer
-bool AP_Airspeed_MS5525::timer()
+// 80Hz timer
+void AP_Airspeed_MS5525::timer()
 {
+    if (AP_HAL::micros() - command_send_us < 10000) {
+        // we should avoid trying to read the ADC too soon after
+        // sending the command
+        return;
+    }
+    
     uint32_t adc_val = read_adc();
 
+    if (adc_val == 0) {
+        // we have either done a read too soon after sending the
+        // request or we have tried to read the same sample twice. We
+        // re-send the command now as we don't know what state the
+        // sensor is in, and we do want to trigger it sending a value,
+        // which we will discard
+        if (dev->transfer(&cmd_sent, 1, nullptr, 0)) {
+            command_send_us = AP_HAL::micros();
+        }
+        // when we get adc_val == 0 then then both the current value and
+        // the next value we read from the sensor are invalid
+        ignore_next = true;
+        return;
+    }
+    
     /*
      * If read fails, re-initiate a read command for current state or we are
      * stuck
      */
-    uint8_t next_state = state;
-    if (adc_val != 0) {
-        next_state = (state + 1) % 5;
-
-        if (state == 0) {
+    if (!ignore_next) {
+        if (cmd_sent == REG_CONVERT_TEMPERATURE) {
             D2 = adc_val;
-        } else {
+        } else if (cmd_sent == REG_CONVERT_PRESSURE) {
             D1 = adc_val;
             calculate();
         }
     }
 
-    uint8_t next_cmd = next_state == 0 ? REG_CONVERT_TEMPERATURE : REG_CONVERT_PRESSURE;
-    if (!dev->transfer(&next_cmd, 1, nullptr, 0)) {
-        return true;
-    }
-
-    state = next_state;
+    ignore_next = false;
     
-    return true;
+    cmd_sent = (state == 0) ? REG_CONVERT_TEMPERATURE : REG_CONVERT_PRESSURE;
+    if (!dev->transfer(&cmd_sent, 1, nullptr, 0)) {
+        // we don't know for sure what state the sensor is in when we
+        // fail to send the command, so ignore the next response
+        ignore_next = true;
+        return;
+    }
+    command_send_us = AP_HAL::micros();
+
+    state = (state + 1) % 5;
 }
 
 // return the current differential_pressure in Pascal
 bool AP_Airspeed_MS5525::get_differential_pressure(float &_pressure)
 {
+    WITH_SEMAPHORE(sem);
+
     if ((AP_HAL::millis() - last_sample_time_ms) > 100) {
         return false;
     }
-    if (sem->take(0)) {
-        if (press_count > 0) {
-            pressure = pressure_sum / press_count;
-            press_count = 0;
-            pressure_sum = 0;
-        }
-        sem->give();
+
+    if (press_count > 0) {
+        pressure = pressure_sum / press_count;
+        press_count = 0;
+        pressure_sum = 0;
     }
     _pressure = pressure;
+
     return true;
 }
 
 // return the current temperature in degrees C, if available
 bool AP_Airspeed_MS5525::get_temperature(float &_temperature)
 {
+    WITH_SEMAPHORE(sem);
+
     if ((AP_HAL::millis() - last_sample_time_ms) > 100) {
         return false;
     }
-    if (sem->take(0)) {
-        if (temp_count > 0) {
-            temperature = temperature_sum / temp_count;
-            temp_count = 0;
-            temperature_sum = 0;
-        }
-        sem->give();
+
+    if (temp_count > 0) {
+        temperature = temperature_sum / temp_count;
+        temp_count = 0;
+        temperature_sum = 0;
     }
+
     _temperature = temperature;
     return true;
 }

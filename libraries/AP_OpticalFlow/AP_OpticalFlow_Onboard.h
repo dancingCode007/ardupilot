@@ -25,9 +25,8 @@ class AP_OpticalFlow_Onboard : public OpticalFlow_backend
 {
 public:
     AP_OpticalFlow_Onboard(OpticalFlow &_frontend);
-    void init(void);
-    void update(void);
+    void init(void) override;
+    void update(void) override;
 private:
-    void _get_gyro(float&, float&, float&);
     uint32_t _last_read_ms;
 };

@@ -10,9 +10,9 @@
   own class.
  */
 
-#include <AP_Common/AP_Common.h>
-#include <AP_Param/AP_Param.h>
-#include <DataFlash/DataFlash.h>
+#include <AP_Vehicle/AP_Vehicle.h>
+
+#include <stdint.h>
 
 class AP_SpdHgtControl {
 public:
@@ -21,31 +21,18 @@ public:
 	// Should be called at 50Hz or faster
 	virtual void update_50hz(void) = 0;
 
-	/**
-	   stages of flight so the altitude controller can choose to
-	   prioritise height or speed
-	 */
-	enum FlightStage {
-		FLIGHT_TAKEOFF       = 1,
-        FLIGHT_VTOL          = 2,
-        FLIGHT_NORMAL        = 3,
-		FLIGHT_LAND_APPROACH = 4,
-		FLIGHT_LAND_PREFLARE = 5,
-        FLIGHT_LAND_FINAL    = 6,
-        FLIGHT_LAND_ABORT    = 7
-	};
 
 	// Update of the pitch and throttle demands
 	// Should be called at 10Hz or faster
 	virtual void update_pitch_throttle( int32_t hgt_dem_cm,
 										int32_t EAS_dem_cm,
-										enum FlightStage flight_stage,
-                                        bool is_doing_auto_land,
+										enum AP_Vehicle::FixedWing::FlightStage flight_stage,
                                         float distance_beyond_land_wp,
 										int32_t ptchMinCO_cd,
 										int16_t throttle_nudge,
                                         float hgt_afe,
-										float load_factor) = 0;
+										float load_factor,
+                                        bool soaring_active) = 0;
 
 	// demanded throttle in percentage
 	// should return 0 to 100
@@ -64,6 +51,9 @@ public:
 	// return maximum climb rate
 	virtual float get_max_climbrate(void) const = 0;
 
+    // added to let SoaringController reset pitch integrator to zero
+    virtual void reset_pitch_I(void) = 0;
+    
     // return landing sink rate
     virtual float get_land_sinkrate(void) const = 0;
 
@@ -72,6 +62,9 @@ public:
 
 	// set path_proportion accessor
     virtual void set_path_proportion(float path_proportion) = 0;
+
+    // reset on next loop
+    virtual void reset(void) = 0;
 
 	// add new controllers to this enum. Users can then
 	// select which controller to use by setting the

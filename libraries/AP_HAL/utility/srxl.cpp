@@ -20,12 +20,13 @@
    - 2016.10.23: SRXL variant V1 sucessfully (Testbench and Pixhawk/MissionPlanner) tested with RX-9-DR M-LINK (SW v1.26)
  */
 
+#include "srxl.h"
+
+#include <AP_Math/crc.h>
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include "srxl.h"
-
-
 
 /* SRXL datastream characteristics for all variants */
 #define SRXL_MIN_FRAMESPACE_US 8000U    /* Minumum space between srxl frames in us (applies to all variants)  */
@@ -69,31 +70,6 @@ static uint16_t crc_receiver = 0U;                  /* CRC extracted from srxl d
 static uint16_t max_channels;
 
 
-
-
-/**
- * This function calculates the 16bit crc as used throughout the srxl protocol variants
- *
- * This function is intended to be called whenever a new byte shall be added to the crc.
- * Simply provide the old crc and the new data byte and the function return the new crc value.
- *
- * To start a new crc calculation for a new srxl frame, provide parameter crc=0 and the first byte of the frame.
- *
- * @param[in]   crc - start value for crc
- * @param[in]   new_byte - byte that shall be included in crc calculation
- * @return      calculated crc
- */
-static uint16_t srxl_crc16 (uint16_t crc, uint8_t new_byte)
-{
-    uint8_t loop;
-    crc = crc ^ (uint16_t)new_byte << 8;
-    for(loop = 0; loop < 8; loop++) {
-		crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : (crc << 1);
-	}
-    return crc;
-}
-
-
 /**
  * Get RC channel information as microsecond pulsewidth representation from srxl version 1 and 2
  *
@@ -128,7 +104,7 @@ static uint16_t srxl_crc16 (uint16_t crc, uint8_t new_byte)
  * @param[out]  num_values - number of RC channels extracted from srxl frame
  * @param[out]  values - array of RC channels with refreshed information as pulsewidth in microseconds Range: 800us - 2200us
  * @param[out]  failsafe_state - true: RC-receiver is in failsafe state, false: RC-receiver is not in failsafe state
- * @return      0: success
+ * @retval 0 success
  */
 static int srxl_channels_get_v1v2(uint16_t max_values, uint8_t *num_values, uint16_t *values, bool *failsafe_state)
 {
@@ -174,7 +150,7 @@ static int srxl_channels_get_v1v2(uint16_t max_values, uint8_t *num_values, uint
  * @param[out] num_values - number of RC channels extracted from srxl frame
  * @param[out] values - array of RC channels with refreshed information as pulsewidth in microseconds Range: 800us - 2200us
  * @param[out] failsafe_state - true: RC-receiver is in failsafe state, false: RC-receiver is not in failsafe state
- * @return 0: success
+ * @retval 0 success
  */
 static int srxl_channels_get_v5(uint16_t max_values, uint8_t *num_values, uint16_t *values, bool *failsafe_state)
 {
@@ -254,7 +230,10 @@ static int srxl_channels_get_v5(uint16_t max_values, uint8_t *num_values, uint16
  * @param[out] values - array of RC channels with refreshed information as pulsewidth in microseconds Range: 800us - 2200us
  * @param[in] maximum number of values supported by pixhawk
  * @param[out] failsafe_state - true: RC-receiver is in failsafe state, false: RC-receiver is not in failsafe state
- * @return 0: success
+ * @retval 0 success (a decoded packet)
+ * @retval 1 no packet yet (accumulating)
+ * @retval 2 unknown packet
+ * @retval 4 checksum error
  */
 int srxl_decode(uint64_t timestamp_us, uint8_t byte, uint8_t *num_values, uint16_t *values, uint16_t max_values, bool *failsafe_state)
 {
@@ -284,8 +263,8 @@ int srxl_decode(uint64_t timestamp_us, uint8_t byte, uint8_t *num_values, uint16
             frame_len_full = 0U;
             frame_header = SRXL_HEADER_NOT_IMPL;
             decode_state = STATE_IDLE;
-            ret = 2; /* protocol version not implemented --> no channel data --> unknown packet  */
-            break;
+            buflen = 0;
+            return 2; /* protocol version not implemented --> no channel data --> unknown packet  */
         }
     }
 
@@ -294,17 +273,25 @@ int srxl_decode(uint64_t timestamp_us, uint8_t byte, uint8_t *num_values, uint16
     switch (decode_state) {
     case STATE_NEW:   /* buffer header byte and prepare for frame reception and decoding */
         buffer[0U]=byte;
-        crc_fmu = srxl_crc16(0U,byte);
+        crc_fmu = crc_xmodem_update(0U,byte);
         buflen = 1U;
         decode_state_next = STATE_COLLECT;
         break;
 
     case STATE_COLLECT: /* receive all bytes. After reception decode frame and provide rc channel information to FMU   */
+        if (buflen >= frame_len_full) {
+            // a logic bug in the state machine, this shouldn't happen
+            decode_state = STATE_IDLE;
+            buflen = 0;
+            frame_len_full = 0;
+            frame_header = SRXL_HEADER_NOT_IMPL;
+            return 2;
+        }
         buffer[buflen] = byte;
         buflen++;
         /* CRC not over last 2 frame bytes as these bytes inhabitate the crc */
         if (buflen <= (frame_len_full-2)) {
-           crc_fmu = srxl_crc16(crc_fmu,byte);
+           crc_fmu = crc_xmodem_update(crc_fmu,byte);
         }
         if(  buflen == frame_len_full ) {
             /* CRC check here */
@@ -499,5 +486,6 @@ int main(int argc, const char *argv[])
             }
         }
     }
+    fclose(f);
 }
 #endif

@@ -28,31 +28,62 @@
 #define WAI_REG 0x0
 #define DEVICE_ID 0x10
 
-#define CNTL1_REG 0xA
-#define SINGLE_MEASUREMENT_MODE 0x1
-#define ODR_100HZ 0x6
+#define OUTPUT_X_L_REG 0x3
+#define OUTPUT_X_H_REG 0x4
+#define OUTPUT_Y_L_REG 0x5
+#define OUTPUT_Y_H_REG 0x6
+#define OUTPUT_Z_L_REG 0x7
+#define OUTPUT_Z_H_REG 0x8
 
-#define STAT1_REG 0x2
-#define DATA_RDY 0x1
+#define CNTL1_REG 0xA
+#define CNTL1_VAL_SINGLE_MEASUREMENT_MODE 0x1
+
+#define CNTL2_REG 0xB
+#define CNTL2_VAL_SRST 1
 
 #define AVGCNTL_REG 0x41
-#define AVERAGING_Y_BY_2 0x20
-#define AVERAGING_XZ_BY_4 0x04
+#define AVGCNTL_VAL_XZ_0  (0)
+#define AVGCNTL_VAL_XZ_2  (1)
+#define AVGCNTL_VAL_XZ_4  (2)
+#define AVGCNTL_VAL_XZ_8  (3)
+#define AVGCNTL_VAL_XZ_16 (4)
+#define AVGCNTL_VAL_Y_0  (0 << 3)
+#define AVGCNTL_VAL_Y_2  (1 << 3)
+#define AVGCNTL_VAL_Y_4  (2 << 3)
+#define AVGCNTL_VAL_Y_8  (3 << 3)
+#define AVGCNTL_VAL_Y_16 (4 << 3)
 
 #define PDCNTL_REG 0x42
-#define NORMAL_PULSE_DURATION 0xC0
+#define PDCNTL_VAL_PULSE_DURATION_NORMAL 0xC0
+
+#define SAMPLING_PERIOD_USEC (10 * AP_USEC_PER_MSEC)
+
+/*
+ * FSR:
+ *   x, y: +- 1600 µT
+ *   z:    +- 2500 µT
+ *
+ * Resolution according to datasheet is 0.3µT/LSB
+ */
+#define IST8310_RESOLUTION 0.3
+
+static const int16_t IST8310_MAX_VAL_XY = (1600 / IST8310_RESOLUTION) + 1;
+static const int16_t IST8310_MIN_VAL_XY = -IST8310_MAX_VAL_XY;
+static const int16_t IST8310_MAX_VAL_Z  = (2500 / IST8310_RESOLUTION) + 1;
+static const int16_t IST8310_MIN_VAL_Z  = -IST8310_MAX_VAL_Z;
+
 
 extern const AP_HAL::HAL &hal;
 
-AP_Compass_Backend *AP_Compass_IST8310::probe(Compass &compass,
-                                              AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+AP_Compass_Backend *AP_Compass_IST8310::probe(AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev,
+                                              bool force_external,
                                               enum Rotation rotation)
 {
     if (!dev) {
         return nullptr;
     }
 
-    AP_Compass_IST8310 *sensor = new AP_Compass_IST8310(compass, std::move(dev), rotation);
+    AP_Compass_IST8310 *sensor = new AP_Compass_IST8310(std::move(dev), force_external, rotation);
     if (!sensor || !sensor->init()) {
         delete sensor;
         return nullptr;
@@ -61,20 +92,20 @@ AP_Compass_Backend *AP_Compass_IST8310::probe(Compass &compass,
     return sensor;
 }
 
-AP_Compass_IST8310::AP_Compass_IST8310(Compass &compass,
-                                       AP_HAL::OwnPtr<AP_HAL::Device> dev,
+AP_Compass_IST8310::AP_Compass_IST8310(AP_HAL::OwnPtr<AP_HAL::Device> dev,
+                                       bool force_external,
                                        enum Rotation rotation)
-    : AP_Compass_Backend(compass)
-    , _dev(std::move(dev))
+    : _dev(std::move(dev))
     , _rotation(rotation)
+    , _force_external(force_external)
 {
 }
 
 bool AP_Compass_IST8310::init()
 {
-    if (!_dev->get_semaphore()->take(HAL_SEMAPHORE_BLOCK_FOREVER)) {
-        return false;
-    }
+    uint8_t reset_count = 0;
+
+    _dev->get_semaphore()->take_blocking();
 
     // high retries for init
     _dev->set_retries(10);
@@ -86,9 +117,29 @@ bool AP_Compass_IST8310::init()
         goto fail;
     }
 
-    if (!_dev->write_register(AVGCNTL_REG, AVERAGING_Y_BY_2 | AVERAGING_XZ_BY_4) ||
-        !_dev->write_register(PDCNTL_REG, NORMAL_PULSE_DURATION)) {
-        fprintf(stderr, "IST8310: found device but could not set it up\n");
+    for (; reset_count < 5; reset_count++) {
+        if (!_dev->write_register(CNTL2_REG, CNTL2_VAL_SRST)) {
+            hal.scheduler->delay(10);
+            continue;
+        }
+
+        hal.scheduler->delay(10);
+
+        uint8_t cntl2 = 0xFF;
+        if (_dev->read_registers(CNTL2_REG, &cntl2, 1) &&
+            (cntl2 & 0x01) == 0) {
+            break;
+        }
+    }
+
+    if (reset_count == 5) {
+        printf("IST8310: failed to reset device\n");
+        goto fail;
+    }
+
+    if (!_dev->write_register(AVGCNTL_REG, AVGCNTL_VAL_Y_16 | AVGCNTL_VAL_XZ_16) ||
+        !_dev->write_register(PDCNTL_REG, PDCNTL_VAL_PULSE_DURATION_NORMAL)) {
+        printf("IST8310: found device but could not set it up\n");
         goto fail;
     }
 
@@ -100,18 +151,27 @@ bool AP_Compass_IST8310::init()
 
     _dev->get_semaphore()->give();
 
-    _instance = register_compass();
+    // register compass instance
+    _dev->set_device_type(DEVTYPE_IST8310);
+    if (!register_compass(_dev->get_bus_id(), _instance)) {
+        return false;
+    }
+    set_dev_id(_instance, _dev->get_bus_id());
 
     printf("%s found on bus %u id %u address 0x%02x\n", name,
            _dev->bus_num(), _dev->get_bus_id(), _dev->get_bus_address());
 
     set_rotation(_instance, _rotation);
 
-    _dev->set_device_type(DEVTYPE_IST8310);
-    set_dev_id(_instance, _dev->get_bus_id());
+    if (_force_external) {
+        set_external(_instance, true);
+    }
+    
+    _periodic_handle = _dev->register_periodic_callback(SAMPLING_PERIOD_USEC,
+        FUNCTOR_BIND_MEMBER(&AP_Compass_IST8310::timer, void));
 
-    _dev->register_periodic_callback(10 * USEC_PER_MSEC,
-                                     FUNCTOR_BIND_MEMBER(&AP_Compass_IST8310::timer, bool));
+    _perf_xfer_err = hal.util->perf_alloc(AP_HAL::Util::PC_COUNT, "IST8310_xfer_err");
+    _perf_bad_data = hal.util->perf_alloc(AP_HAL::Util::PC_COUNT, "IST8310_bad_data");
 
     return true;
 
@@ -122,81 +182,62 @@ fail:
 
 void AP_Compass_IST8310::start_conversion()
 {
-    _dev->write_register(CNTL1_REG,
-            SINGLE_MEASUREMENT_MODE);
+    if (!_dev->write_register(CNTL1_REG, CNTL1_VAL_SINGLE_MEASUREMENT_MODE)) {
+        hal.util->perf_count(_perf_xfer_err);
+        _ignore_next_sample = true;
+    }
 }
 
-bool AP_Compass_IST8310::timer()
+void AP_Compass_IST8310::timer()
 {
-
-    bool ret = false;
+    if (_ignore_next_sample) {
+        _ignore_next_sample = false;
+        start_conversion();
+        return;
+    }
 
     struct PACKED {
-        uint8_t status;
         le16_t rx;
         le16_t ry;
         le16_t rz;
     } buffer;
 
-
-    ret = _dev->read_registers(STAT1_REG, (uint8_t *) &buffer, sizeof(buffer));
+    bool ret = _dev->read_registers(OUTPUT_X_L_REG, (uint8_t *) &buffer, sizeof(buffer));
     if (!ret) {
-        /* We're going to be back on the next iteration either way */
-        return true;
+        hal.util->perf_count(_perf_xfer_err);
+        return;
     }
 
-    auto status = buffer.status;
+    start_conversion();
 
-    if (!(status & 0x01)) {
-        /* We're not ready yet */
-       return true;
-    }
+    /* same period, but start counting from now */
+    _dev->adjust_periodic_callback(_periodic_handle, SAMPLING_PERIOD_USEC);
 
     auto x = static_cast<int16_t>(le16toh(buffer.rx));
     auto y = static_cast<int16_t>(le16toh(buffer.ry));
     auto z = static_cast<int16_t>(le16toh(buffer.rz));
 
-    /* convert uT to milligauss */
-    Vector3f field = Vector3f{x * 3.0f, y * 3.0f, z * 3.0f};
-
-    /* rotate raw_field from sensor frame to body frame */
-    rotate_field(field, _instance);
-
-    /* publish raw_field (uncorrected point sample) for calibration use */
-    publish_raw_field(field, AP_HAL::micros(), _instance);
-
-    /* correct raw_field for known errors */
-    correct_field(field, _instance);
-
-    if (_sem->take(0)) {
-        _accum += field;
-        _accum_count++;
-        _sem->give();
+    /*
+     * Check if value makes sense according to the FSR and Resolution of
+     * this sensor, discarding outliers
+     */
+    if (x > IST8310_MAX_VAL_XY || x < IST8310_MIN_VAL_XY ||
+        y > IST8310_MAX_VAL_XY || y < IST8310_MIN_VAL_XY ||
+        z > IST8310_MAX_VAL_Z  || z < IST8310_MIN_VAL_Z) {
+        hal.util->perf_count(_perf_bad_data);
+        return;
     }
 
-    start_conversion();
+    // flip Z to conform to right-hand rule convention
+    z = -z;
 
-    return true;
+    /* Resolution: 0.3 µT/LSB - already convert to milligauss */
+    Vector3f field = Vector3f{x * 3.0f, y * 3.0f, z * 3.0f};
+
+    accumulate_sample(field, _instance);
 }
 
 void AP_Compass_IST8310::read()
 {
-    if (!_sem->take_nonblocking()) {
-        return;
-    }
-
-    if (_accum_count == 0) {
-        _sem->give();
-        return;
-    }
-
-    Vector3f field(_accum);
-    field /= _accum_count;
-
-    publish_filtered_field(field, _instance);
-
-    _accum.zero();
-    _accum_count = 0;
-
-    _sem->give();
+    drain_accumulated_samples(_instance);
 }

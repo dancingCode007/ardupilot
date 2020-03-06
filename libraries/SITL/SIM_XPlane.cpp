@@ -26,14 +26,14 @@
 #include <sys/types.h>
 
 #include <AP_HAL/AP_HAL.h>
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
 
 extern const AP_HAL::HAL& hal;
 
 namespace SITL {
 
-XPlane::XPlane(const char *home_str, const char *frame_str) :
-    Aircraft(home_str, frame_str)
+XPlane::XPlane(const char *frame_str) :
+    Aircraft(frame_str)
 {
     use_time_sync = false;
     const char *colon = strchr(frame_str, ':');
@@ -42,6 +42,7 @@ XPlane::XPlane(const char *home_str, const char *frame_str) :
     }
 
     heli_frame = (strstr(frame_str, "-heli") != nullptr);
+    num_motors = 2;
 
     socket_in.bind("0.0.0.0", bind_port);
     printf("Waiting for XPlane data on UDP port %u and sending to port %u\n",
@@ -79,10 +80,14 @@ void XPlane::select_data(uint64_t usel_mask, uint64_t sel_mask)
         uint32_t data[8] {};
     } usel;
     count = 0;
+
+    // only de-select an output once, so we don't fight the user
+    usel_mask &= ~unselected_mask;
+    unselected_mask |= usel_mask;
+
     for (uint8_t i=0; i<64 && count<8; i++) {
         if ((((uint64_t)1)<<i) & usel_mask) {
             usel.data[count++] = i;
-            printf("i=%u\n", (unsigned)i);
         }
     }
     if (count != 0) {
@@ -118,7 +123,7 @@ bool XPlane::receive_data(void)
     }
     ssize_t len = socket_in.recv(pkt, sizeof(pkt), wait_time_ms);
     
-    if (len < pkt_len+5 || memcmp(pkt, "DATA@", 5) != 0) {
+    if (len < pkt_len+5 || memcmp(pkt, "DATA", 4) != 0) {
         // not a data packet we understand
         goto failed;
     }
@@ -161,8 +166,8 @@ bool XPlane::receive_data(void)
             loc.lat = data[1] * 1e7;
             loc.lng = data[2] * 1e7;
             loc.alt = data[3] * FEET_TO_METERS * 100.0f;
-            float hagl = data[4] * FEET_TO_METERS;
-            ground_level = loc.alt * 0.01f - hagl;
+            const float altitude_above_ground = data[4] * FEET_TO_METERS;
+            ground_level = loc.alt * 0.01f - altitude_above_ground;
             break;
         }
 
@@ -236,11 +241,14 @@ bool XPlane::receive_data(void)
                  * input from XPlane10
                  */
                 bool has_magic = ((uint32_t)(data[1] * throttle_magic_scale) % 1000U) == (uint32_t)(throttle_magic * throttle_magic_scale);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
                 if (data[1] < 0 ||
                     data[1] == throttle_sent ||
                     has_magic) {
                     break;
                 }
+#pragma GCC diagnostic pop
                 rcin[2] = data[1];
             }
             break;
@@ -251,11 +259,11 @@ bool XPlane::receive_data(void)
         }
 
         case EngineRPM:
-            rpm1 = data[1];
+            rpm[0] = data[1];
             break;
 
         case PropRPM:
-            rpm2 = data[1];
+            rpm[1] = data[1];
             break;
             
         case Joystick2:
@@ -283,19 +291,25 @@ bool XPlane::receive_data(void)
 
     if (data_mask != required_mask) {
         // ask XPlane to change what data it sends
-        select_data(data_mask & ~required_mask, required_mask & ~data_mask);
-        goto failed;
+        uint64_t usel = data_mask & ~required_mask;
+        uint64_t sel = required_mask & ~data_mask;
+        usel &= ~unselected_mask;
+        if (usel || sel) {
+            select_data(usel, sel);
+            goto failed;
+        }
     }
     position = pos + position_zero;
     update_position();
+    time_advance();
 
     accel_earth = dcm * accel_body;
     accel_earth.z += GRAVITY_MSS;
     
     // the position may slowly deviate due to float accuracy and longitude scaling
-    if (get_distance(loc, location) > 4 || fabsf(loc.alt - location.alt)*0.01 > 2) {
+    if (loc.get_distance(location) > 4 || abs(loc.alt - location.alt)*0.01f > 2.0f) {
         printf("X-Plane home reset dist=%f alt=%.1f/%.1f\n",
-               get_distance(loc, location), loc.alt*0.01f, location.alt*0.01f);
+               loc.get_distance(location), loc.alt*0.01f, location.alt*0.01f);
         // reset home location
         position_zero(-pos.x, -pos.y, -pos.z);
         home.lat = loc.lat;
@@ -305,6 +319,7 @@ bool XPlane::receive_data(void)
         position.y = 0;
         position.z = 0;
         update_position();
+        time_advance();
     }
 
     update_mag_field_bf();
@@ -325,27 +340,15 @@ failed:
     }
 
     // advance time by 1ms
-    Vector3f rot_accel;
     frame_time_us = 1000;
     float delta_time = frame_time_us * 1e-6f;
 
     time_now_us += frame_time_us;
 
-    // extrapolate sensors
-    dcm.rotate(gyro * delta_time);
-    dcm.normalize();
-
-    // work out acceleration as seen by the accelerometers. It sees the kinematic
-    // acceleration (ie. real movement), plus gravity
-    accel_body = dcm.transposed() * (accel_earth + Vector3f(0,0,-GRAVITY_MSS));
-
-    // new velocity and position vectors
-    velocity_ef += accel_earth * delta_time;
-    position += velocity_ef * delta_time;
-    velocity_air_ef = velocity_ef + wind_ef;
-    velocity_air_bf = dcm.transposed() * velocity_air_ef;
-
+    extrapolate_sensors(delta_time);
+    
     update_position();
+    time_advance();
     update_mag_field_bf();
     report.frame_count++;
     return false;
@@ -385,10 +388,10 @@ void XPlane::send_data(const struct sitl_input &input)
     throttle = ((uint32_t)(throttle * 1000)) * 1.0e-3f + throttle_magic;
     
     uint8_t flap_chan;
-    if (RC_Channel_aux::find_channel(RC_Channel_aux::k_flap, flap_chan) ||
-        RC_Channel_aux::find_channel(RC_Channel_aux::k_flap_auto, flap_chan)) {
+    if (SRV_Channels::find_channel(SRV_Channel::k_flap, flap_chan) ||
+        SRV_Channels::find_channel(SRV_Channel::k_flap_auto, flap_chan)) {
         float flap = (input.servos[flap_chan]-1000)/1000.0;
-        if (flap != last_flap) {
+        if (!is_equal(flap, last_flap)) {
             send_dref("sim/flightmodel/controls/flaprqst", flap);
             send_dref("sim/aircraft/overflow/acf_flap_arm", flap>0?1:0);
         }

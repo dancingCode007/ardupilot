@@ -7,7 +7,7 @@
 
 #include "AnalogIn_Navio2.h"
 
-static const AP_HAL::HAL &hal = AP_HAL::get_HAL();
+extern const AP_HAL::HAL& hal;
 
 #define ADC_BASE_PATH "/sys/kernel/rcio/adc"
 
@@ -114,7 +114,7 @@ AP_HAL::AnalogSource *AnalogIn_Navio2::channel(int16_t pin)
         }
     }
 
-    hal.console->println("Out of analog channels");
+    hal.console->printf("Out of analog channels\n");
     return nullptr;
 }
 

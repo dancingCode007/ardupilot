@@ -4,9 +4,10 @@
 
 #include "Plane.h"
 
+#if ADVANCED_FAILSAFE == ENABLED
 // Constructor
-AP_AdvancedFailsafe_Plane::AP_AdvancedFailsafe_Plane(AP_Mission &_mission, AP_Baro &_baro, const AP_GPS &_gps, const RCMapper &_rcmap) :
-    AP_AdvancedFailsafe(_mission, _baro, _gps, _rcmap)
+AP_AdvancedFailsafe_Plane::AP_AdvancedFailsafe_Plane(AP_Mission &_mission) :
+    AP_AdvancedFailsafe(_mission)
 {}
 
 
@@ -15,59 +16,67 @@ AP_AdvancedFailsafe_Plane::AP_AdvancedFailsafe_Plane(AP_Mission &_mission, AP_Ba
  */
 void AP_AdvancedFailsafe_Plane::terminate_vehicle(void)
 {
-    // we are terminating. Setup primary output channels radio_out values
-    RC_Channel *ch_roll     = RC_Channel::rc_channel(rcmap.roll()-1);
-    RC_Channel *ch_pitch    = RC_Channel::rc_channel(rcmap.pitch()-1);
-    RC_Channel *ch_yaw      = RC_Channel::rc_channel(rcmap.yaw()-1);
-    RC_Channel *ch_throttle = RC_Channel::rc_channel(rcmap.throttle()-1);
+    if (plane.quadplane.available() && _terminate_action == TERMINATE_ACTION_LAND) {
+        // perform a VTOL landing
+        plane.set_mode(plane.mode_qland, ModeReason::FENCE_BREACHED);
+        return;
+    }
 
-    ch_roll->set_radio_out(ch_roll->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MIN));
-    ch_pitch->set_radio_out(ch_pitch->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MAX));
-    ch_yaw->set_radio_out(ch_yaw->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MAX));
-    ch_throttle->set_radio_out(ch_throttle->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MIN));
-
-    RC_Channel_aux::disable_passthrough(true);
+    plane.g2.servo_channels.disable_passthrough(true);
     
-    plane.servos_output();
+    if (_terminate_action == TERMINATE_ACTION_LAND) {
+        plane.landing.terminate();
+    } else {
+        // aerodynamic termination is the default approach to termination
+        SRV_Channels::set_output_scaled(SRV_Channel::k_flap_auto, 100);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_flap, 100);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_aileron, SERVO_MAX);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_rudder, SERVO_MAX);
+        SRV_Channels::set_output_scaled(SRV_Channel::k_elevator, SERVO_MAX);
+        if (plane.have_reverse_thrust()) {
+            // configured for reverse thrust, use TRIM
+            SRV_Channels::set_output_limit(SRV_Channel::k_throttle, SRV_Channel::Limit::TRIM);
+            SRV_Channels::set_output_limit(SRV_Channel::k_throttleLeft, SRV_Channel::Limit::TRIM);
+            SRV_Channels::set_output_limit(SRV_Channel::k_throttleRight, SRV_Channel::Limit::TRIM);
+        } else {
+            // use MIN
+            SRV_Channels::set_output_limit(SRV_Channel::k_throttle, SRV_Channel::Limit::MIN);
+            SRV_Channels::set_output_limit(SRV_Channel::k_throttleLeft, SRV_Channel::Limit::MIN);
+            SRV_Channels::set_output_limit(SRV_Channel::k_throttleRight, SRV_Channel::Limit::MIN);
+        }
+        SRV_Channels::set_output_limit(SRV_Channel::k_manual, SRV_Channel::Limit::TRIM);
+        SRV_Channels::set_output_limit(SRV_Channel::k_none, SRV_Channel::Limit::TRIM);
+    }
 
-    // and all aux channels
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_flap_auto, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_flap, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_aileron, RC_Channel::RC_CHANNEL_LIMIT_MIN);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_rudder, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_elevator, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_elevator_with_input, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_manual, RC_Channel::RC_CHANNEL_LIMIT_TRIM);
-    RC_Channel_aux::set_servo_limit(RC_Channel_aux::k_none, RC_Channel::RC_CHANNEL_LIMIT_TRIM);
+    plane.servos_output();
 
     plane.quadplane.afs_terminate();
     
     // also disarm to ensure that ignition is cut
-    plane.disarm_motors();
+    plane.arming.disarm(AP_Arming::Method::AFS);
 }
 
 void AP_AdvancedFailsafe_Plane::setup_IO_failsafe(void)
 {
-    const RC_Channel *ch_roll     = RC_Channel::rc_channel(rcmap.roll()-1);
-    const RC_Channel *ch_pitch    = RC_Channel::rc_channel(rcmap.pitch()-1);
-    const RC_Channel *ch_yaw      = RC_Channel::rc_channel(rcmap.yaw()-1);
-    const RC_Channel *ch_throttle = RC_Channel::rc_channel(rcmap.throttle()-1);
-
-    // setup primary channel output values
-    hal.rcout->set_failsafe_pwm(1U<<(rcmap.roll()-1),     ch_roll->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MIN));
-    hal.rcout->set_failsafe_pwm(1U<<(rcmap.pitch()-1),    ch_pitch->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MAX));
-    hal.rcout->set_failsafe_pwm(1U<<(rcmap.yaw()-1),      ch_yaw->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MAX));
-    hal.rcout->set_failsafe_pwm(1U<<(rcmap.throttle()-1), ch_throttle->get_limit_pwm(RC_Channel::RC_CHANNEL_LIMIT_MIN));
-
-    // and all aux channels
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_flap_auto, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_flap, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_aileron, RC_Channel::RC_CHANNEL_LIMIT_MIN);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_rudder, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_elevator, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_elevator_with_input, RC_Channel::RC_CHANNEL_LIMIT_MAX);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_manual, RC_Channel::RC_CHANNEL_LIMIT_TRIM);
-    RC_Channel_aux::set_servo_failsafe(RC_Channel_aux::k_none, RC_Channel::RC_CHANNEL_LIMIT_TRIM);
+    // all aux channels
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_flap_auto, SRV_Channel::Limit::MAX);
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_flap, SRV_Channel::Limit::MAX);
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_aileron, SRV_Channel::Limit::MIN);
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_rudder, SRV_Channel::Limit::MAX);
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_elevator, SRV_Channel::Limit::MAX);
+    if (plane.have_reverse_thrust()) {
+        // configured for reverse thrust, use TRIM
+        SRV_Channels::set_failsafe_limit(SRV_Channel::k_throttle, SRV_Channel::Limit::TRIM);
+        SRV_Channels::set_failsafe_limit(SRV_Channel::k_throttleLeft, SRV_Channel::Limit::TRIM);
+        SRV_Channels::set_failsafe_limit(SRV_Channel::k_throttleRight, SRV_Channel::Limit::TRIM);
+    } else {
+        // normal throttle, use MIN
+        SRV_Channels::set_failsafe_limit(SRV_Channel::k_throttle, SRV_Channel::Limit::MIN);
+        SRV_Channels::set_failsafe_limit(SRV_Channel::k_throttleLeft, SRV_Channel::Limit::MIN);
+        SRV_Channels::set_failsafe_limit(SRV_Channel::k_throttleRight, SRV_Channel::Limit::MIN);
+    }
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_manual, SRV_Channel::Limit::TRIM);
+    SRV_Channels::set_failsafe_limit(SRV_Channel::k_none, SRV_Channel::Limit::TRIM);
 
     if (plane.quadplane.available()) {
         // setup AP_Motors outputs for failsafe
@@ -84,8 +93,9 @@ AP_AdvancedFailsafe::control_mode AP_AdvancedFailsafe_Plane::afs_mode(void)
     if (plane.auto_throttle_mode) {
         return AP_AdvancedFailsafe::AFS_AUTO;
     }
-    if (plane.control_mode == MANUAL) {
+    if (plane.control_mode == &plane.mode_manual) {
         return AP_AdvancedFailsafe::AFS_MANUAL;
     }
     return AP_AdvancedFailsafe::AFS_STABILIZED;
 }
+#endif // ADVANCED_FAILSAFE

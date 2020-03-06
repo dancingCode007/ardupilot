@@ -25,17 +25,16 @@
 extern const AP_HAL::HAL& hal;
 
 // constructor
-AP_Compass_HIL::AP_Compass_HIL(Compass &compass):
-    AP_Compass_Backend(compass)
+AP_Compass_HIL::AP_Compass_HIL()
 {
     memset(_compass_instance, 0, sizeof(_compass_instance));
     _compass._setup_earth_field();
 }
 
 // detect the sensor
-AP_Compass_Backend *AP_Compass_HIL::detect(Compass &compass)
+AP_Compass_Backend *AP_Compass_HIL::detect()
 {
-    AP_Compass_HIL *sensor = new AP_Compass_HIL(compass);
+    AP_Compass_HIL *sensor = new AP_Compass_HIL();
     if (sensor == nullptr) {
         return nullptr;
     }
@@ -51,7 +50,10 @@ AP_Compass_HIL::init(void)
 {
     // register two compass instances
     for (uint8_t i=0; i<HIL_NUM_COMPASSES; i++) {
-        _compass_instance[i] = register_compass();
+        uint32_t dev_id = AP_HAL::Device::make_bus_id(AP_HAL::Device::BUS_TYPE_SITL, i, 0, DEVTYPE_SITL);
+        if (!register_compass(dev_id, _compass_instance[i])) {
+            return false;
+        }
     }
     return true;
 }
@@ -63,7 +65,7 @@ void AP_Compass_HIL::read()
             uint8_t compass_instance = _compass_instance[i];
             Vector3f field = _compass._hil.field[compass_instance];
             rotate_field(field, compass_instance);
-            publish_raw_field(field, AP_HAL::micros(), compass_instance);
+            publish_raw_field(field, compass_instance);
             correct_field(field, compass_instance);
             uint32_t saved_last_update = _compass.last_update_usec(compass_instance);
             publish_filtered_field(field, compass_instance);

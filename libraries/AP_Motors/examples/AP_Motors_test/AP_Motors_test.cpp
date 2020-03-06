@@ -5,30 +5,12 @@
 
 // Libraries
 #include <AP_Common/AP_Common.h>
-#include <AP_Param/AP_Param.h>
 #include <AP_HAL/AP_HAL.h>
-#include <AP_Math/AP_Math.h>        // ArduPilot Mega Vector/Matrix math Library
+#include <AP_BattMonitor/AP_BattMonitor.h>
 #include <RC_Channel/RC_Channel.h>     // RC Channel Library
 #include <AP_Motors/AP_Motors.h>
-#include <AP_Notify/AP_Notify.h>
-#include <AP_GPS/AP_GPS.h>
-#include <DataFlash/DataFlash.h>
-#include <AP_InertialSensor/AP_InertialSensor.h>
-#include <AP_ADC/AP_ADC.h>
-#include <GCS_MAVLink/GCS_MAVLink.h>
-#include <AP_Baro/AP_Baro.h>
-#include <Filter/Filter.h>
-#include <AP_AHRS/AP_AHRS.h>
-#include <AP_Compass/AP_Compass.h>
-#include <AP_Declination/AP_Declination.h>
-#include <AP_Airspeed/AP_Airspeed.h>
-#include <AP_Vehicle/AP_Vehicle.h>
-#include <AP_Mission/AP_Mission.h>
-#include <StorageManager/StorageManager.h>
-#include <AP_Terrain/AP_Terrain.h>
-#include <AP_BattMonitor/AP_BattMonitor.h>
-#include <AP_RangeFinder/AP_RangeFinder.h>
-#include <AP_Scheduler/AP_Scheduler.h>
+#include <RC_Channel/RC_Channel.h>
+#include <SRV_Channel/SRV_Channel.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -42,45 +24,40 @@ void update_motors();
 #define HELI_TEST       0   // set to 1 to test helicopters
 #define NUM_OUTPUTS     4   // set to 6 for hexacopter, 8 for octacopter and heli
 
-RC_Channel rc1(0), rc2(1), rc3(2), rc4(3);
-RC_Channel rc7(6), rsc(8), h1(0), h2(1), h3(2), h4(3);
+SRV_Channels srvs;
 
 // uncomment the row below depending upon what frame you are using
 //AP_MotorsTri	motors(400);
-AP_MotorsQuad   motors(400);
-//AP_MotorsHexa	motors(400);
-//AP_MotorsY6	motors(400);
-//AP_MotorsOcta	motors(400);
-//AP_MotorsOctaQuad	motors(400);
+AP_MotorsMatrix   motors(400);
 //AP_MotorsHeli_Single motors(rc7, rsc, h1, h2, h3, h4, 400);
 //AP_MotorsSingle motors(400);
 //AP_MotorsCoax motors(400);
 
+AP_BattMonitor _battmonitor{0, nullptr, nullptr};
+
 // setup
 void setup()
 {
-    hal.console->println("AP_Motors library test ver 1.0");
+    hal.console->printf("AP_Motors library test ver 1.0\n");
 
     // motor initialisation
     motors.set_update_rate(490);
-    motors.set_frame_orientation(AP_MOTORS_X_FRAME);
-    motors.Init();
+    motors.init(AP_Motors::MOTOR_FRAME_QUAD, AP_Motors::MOTOR_FRAME_TYPE_X);
 #if HELI_TEST == 0
     motors.set_throttle_range(1000,2000);
-    motors.set_hover_throttle(500);
+    motors.set_throttle_avg_max(0.5f);
 #endif
-    motors.enable();
     motors.output_min();
 
     // setup radio
-	 rc3.set_radio_min(1000);
-    rc3.set_radio_max(2000);
+    SRV_Channels::srv_channel(2)->set_output_min(1000);
+    SRV_Channels::srv_channel(2)->set_output_max(2000);
 
     // set rc channel ranges
-    rc1.set_angle(4500);
-    rc2.set_angle(4500);
-    rc3.set_range(130, 1000);
-    rc4.set_angle(4500);
+    SRV_Channels::srv_channel(0)->set_angle(4500);
+    SRV_Channels::srv_channel(1)->set_angle(4500);
+    SRV_Channels::srv_channel(2)->set_range(1000);
+    SRV_Channels::srv_channel(3)->set_angle(4500);
 
     hal.scheduler->delay(1000);
 }
@@ -91,7 +68,7 @@ void loop()
     int16_t value;
 
     // display help
-    hal.console->println("Press 't' to run motor orders test, 's' to run stability patch test.  Be careful the motors will spin!");
+    hal.console->printf("Press 't' to run motor orders test, 's' to run stability patch test.  Be careful the motors will spin!\n");
 
     // wait for user to enter something
     while( !hal.console->available() ) {
@@ -113,17 +90,17 @@ void loop()
 // stability_test
 void motor_order_test()
 {
-    hal.console->println("testing motor order");
+    hal.console->printf("testing motor order\n");
     motors.armed(true);
     for (int8_t i=1; i <= AP_MOTORS_MAX_NUM_MOTORS; i++) {
         hal.console->printf("Motor %d\n",(int)i);
-        motors.output_test(i, 1150);
+        motors.output_test_seq(i, 1150);
         hal.scheduler->delay(300);
-        motors.output_test(i, 1000);
+        motors.output_test_seq(i, 1000);
         hal.scheduler->delay(2000);
     }
     motors.armed(false);
-    hal.console->println("finished test.");
+    hal.console->printf("finished test.\n");
 
 }
 
@@ -138,11 +115,12 @@ void stability_test()
     int16_t rpy_tests[] = {0, 1000, 2000, 3000, 4500, -1000, -2000, -3000, -4500};
     uint8_t rpy_tests_num = sizeof(rpy_tests) / sizeof(int16_t);
 
-    hal.console->printf("\nTesting stability patch\nThrottle Min:%d Max:%d\n",(int)rc3.get_radio_min(),(int)rc3.get_radio_max());
+    hal.console->printf("\nTesting stability patch\nThrottle Min:%d Max:%d\n",(int)SRV_Channels::srv_channel(2)->get_output_min(),(int)SRV_Channels::srv_channel(2)->get_output_max());
 
     // arm motors
     motors.armed(true);
     motors.set_interlock(true);
+    SRV_Channels::enable_aux_servos();
 
 #if NUM_OUTPUTS <= 4
     hal.console->printf("Roll,Pitch,Yaw,Thr,Mot1,Mot2,Mot3,Mot4,AvgOut,LimRP,LimY,LimThD,LimThU\n");                       // quad
@@ -165,16 +143,16 @@ void stability_test()
                     motors.set_pitch(pitch_in/4500.0f);
                     motors.set_yaw(yaw_in/4500.0f);
                     motors.set_throttle(throttle_in);
-                    motors.set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
+                    motors.set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
                     update_motors();
                     avg_out = ((hal.rcout->read(0) + hal.rcout->read(1) + hal.rcout->read(2) + hal.rcout->read(3))/4);
                     // display input and output
 #if NUM_OUTPUTS <= 4
-                    hal.console->printf("%d,%d,%d,%3.1f,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",                // quad
+                    hal.console->printf("%d,%d,%d,%3.1f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",                // quad
 #elif NUM_OUTPUTS <= 6
-                    hal.console->printf("%d,%d,%d,%3.1f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",          // hexa
+                    hal.console->printf("%d,%d,%d,%3.1f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",          // hexa
 #else
-                    hal.console->printf("%d,%d,%d,%3.1f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",    // octa
+                    hal.console->printf("%d,%d,%d,%3.1f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",    // octa
 #endif
                             (int)roll_in,
                             (int)pitch_in,
@@ -193,7 +171,8 @@ void stability_test()
                             (int)hal.rcout->read(7),
 #endif
                             (int)avg_out,
-                            (int)motors.limit.roll_pitch,
+                            (int)motors.limit.roll,
+                            (int)motors.limit.pitch,
                             (int)motors.limit.yaw,
                             (int)motors.limit.throttle_lower,
                             (int)motors.limit.throttle_upper);
@@ -209,13 +188,13 @@ void stability_test()
     motors.set_throttle(0);
     motors.armed(false);
 
-    hal.console->println("finished test.");
+    hal.console->printf("finished test.\n");
 }
 
 void update_motors()
 {
     // call update motors 1000 times to get any ramp limiting complete
-    for (uint16_t i=0; i<4000; i++) {
+    for (uint16_t i=0; i<1000; i++) {
         motors.output();
     }
 }
