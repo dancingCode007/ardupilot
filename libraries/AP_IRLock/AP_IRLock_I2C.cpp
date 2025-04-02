@@ -20,6 +20,10 @@
  *
  * See: http://irlock.com/pages/serial-communication-protocol
  */
+#include "AP_IRLock_config.h"
+
+#if AP_IRLOCK_I2C_ENABLED
+
 #include <AP_HAL/AP_HAL.h>
 #include "AP_IRLock_I2C.h"
 #include <stdio.h>
@@ -28,9 +32,9 @@
 
 extern const AP_HAL::HAL& hal;
 
-#define IRLOCK_I2C_ADDRESS		0x54
+#define IRLOCK_I2C_ADDRESS      0x54
 
-#define IRLOCK_SYNC			0xAA55AA55
+#define IRLOCK_SYNC         0xAA55AA55
 
 void AP_IRLock_I2C::init(int8_t bus)
 {
@@ -80,6 +84,7 @@ bool AP_IRLock_I2C::sync_frame_start(void)
 /*
   converts IRLOCK pixels to a position on a normal plane 1m in front of the lens
   based on a characterization of IR-LOCK with the standard lens, focused such that 2.38mm of threads are exposed
+  see: https://github.com/ArduPilot/ardupilot/issues/5232 and https://gist.github.com/jschall/eac130ed9d6e5dcd9ce582f3eeeb3071
  */
 void AP_IRLock_I2C::pixel_to_1M_plane(float pix_x, float pix_y, float &ret_x, float &ret_y)
 {
@@ -170,3 +175,5 @@ bool AP_IRLock_I2C::update()
     // return true if new data found
     return new_data;
 }
+
+#endif  // AP_IRLOCK_I2C_ENABLED

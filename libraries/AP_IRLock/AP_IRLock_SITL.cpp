@@ -19,9 +19,10 @@
  *  Created on: June 09, 2016
  *      Author: Ian Chen
  */
-#include <AP_HAL/AP_HAL.h>
+#include "AP_IRLock_config.h"
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#if AP_IRLOCK_SITL_ENABLED
+
 #include "AP_IRLock_SITL.h"
 #include "AP_AHRS/AP_AHRS.h"
 
@@ -41,9 +42,9 @@ bool AP_IRLock_SITL::update()
     }
 
     if (_sitl->precland_sim.last_update_ms() != _last_timestamp) {
-        const Vector3f position = _sitl->precland_sim.get_target_position();
-        const Matrix3f &body_to_ned = AP::ahrs().get_rotation_body_to_ned();
-        const Vector3f real_position =  body_to_ned.mul_transpose(-position);
+        const Vector3d position = _sitl->precland_sim.get_target_position();
+        const Matrix3d body_to_ned = AP::ahrs().get_rotation_body_to_ned().todouble();
+        const Vector3d real_position =  body_to_ned.mul_transpose(-position);
         _last_timestamp = _sitl->precland_sim.last_update_ms();
         _last_update_ms = _last_timestamp;
         _target_info.timestamp = _last_timestamp;
@@ -55,4 +56,4 @@ bool AP_IRLock_SITL::update()
     return false;
 }
 
-#endif // CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#endif  // AP_IRLOCK_SITL_ENABLED

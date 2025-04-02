@@ -1,7 +1,12 @@
 #pragma once
 
+#include "AP_RangeFinder_config.h"
+
+#if AP_RANGEFINDER_VL53L1X_ENABLED
+
 #include "AP_RangeFinder.h"
 #include "AP_RangeFinder_Backend.h"
+
 #include <AP_HAL/I2CDevice.h>
 
 class AP_RangeFinder_VL53L1X : public AP_RangeFinder_Backend
@@ -1244,7 +1249,7 @@ private:
     // constructor
     AP_RangeFinder_VL53L1X(RangeFinder::RangeFinder_State &_state, AP_RangeFinder_Params &_params, AP_HAL::OwnPtr<AP_HAL::I2CDevice> dev);
 
-    bool init(DistanceMode mode);
+    __INITFUNC__ bool init(DistanceMode mode);
     void timer();
 
     // check sensor ID
@@ -1290,6 +1295,8 @@ private:
     uint16_t encodeTimeout(uint32_t timeout_mclks);
     uint32_t timeoutMclksToMicroseconds(uint32_t timeout_mclks, uint32_t macro_period_us);
     uint32_t timeoutMicrosecondsToMclks(uint32_t timeout_us, uint32_t macro_period_us);
-    uint32_t calcMacroPeriod(uint8_t vcsel_period);
+    uint32_t calcMacroPeriod(uint8_t vcsel_period) const;
     bool setupManualCalibration(void);
 };
+
+#endif  // AP_RANGEFINDER_VL53L1X_ENABLED

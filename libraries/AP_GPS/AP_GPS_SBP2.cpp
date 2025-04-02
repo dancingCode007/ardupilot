@@ -20,11 +20,14 @@
 //  Swift Binary Protocol format: http://docs.swift-nav.com/
 //
 
+
 #include "AP_GPS.h"
 #include "AP_GPS_SBP2.h"
 #include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS_MAVLink.h>
 #include <GCS_MAVLink/GCS.h>
+
+#if AP_GPS_SBP2_ENABLED
 
 extern const AP_HAL::HAL& hal;
 
@@ -51,16 +54,18 @@ do {                                            \
 #if SBP_INFOREPORTING
  # define Info(fmt, args ...)                                               \
 do {                                                                        \
-    gcs().send_text(MAV_SEVERITY_INFO, fmt "\n", ## args); \
+    GCS_SEND_TEXT(MAV_SEVERITY_INFO, fmt "\n", ## args); \
 } while(0) 
 #else
  # define Info(fmt, args ...)
 #endif
 
 
-AP_GPS_SBP2::AP_GPS_SBP2(AP_GPS &_gps, AP_GPS::GPS_State &_state,
-                       AP_HAL::UARTDriver *_port) :
-    AP_GPS_Backend(_gps, _state, _port)
+AP_GPS_SBP2::AP_GPS_SBP2(AP_GPS &_gps,
+                         AP_GPS::Params &_params,
+                         AP_GPS::GPS_State &_state,
+                         AP_HAL::UARTDriver *_port) :
+    AP_GPS_Backend(_gps, _params, _state, _port)
 {
     Debug("SBP Driver Initialized");
     parser_state.state = sbp_parser_state_t::WAITING;
@@ -100,6 +105,9 @@ AP_GPS_SBP2::_sbp_process()
     while (nleft > 0) {
         nleft--;
         uint8_t temp = port->read();
+#if AP_GPS_DEBUG_LOGGING_ENABLED
+        log_data(&temp, 1);
+#endif
         uint16_t crc;
 
         //This switch reads one character at a time,
@@ -205,17 +213,14 @@ AP_GPS_SBP2::_sbp_process_message() {
         case SBP_EXT_EVENT_MSGTYPE:
             memcpy(&last_event, parser_state.msg_buff, sizeof(struct sbp_ext_event_t));
             check_new_itow(last_event.tow, parser_state.msg_len);
+#if HAL_LOGGING_ENABLED
             logging_ext_event();
+#endif
             break;
 
         default:
             break;
     }
-
-    // send all messages we receive to log, even if it's an unsupported message,
-    // so we can do additional post-processing from logs.
-    // The log mask will be used to adjust or suppress logging
-    logging_log_raw_sbp(parser_state.msg_type, parser_state.sender_id, parser_state.msg_len, parser_state.msg_buff);
 }
 
 int32_t 
@@ -302,10 +307,7 @@ AP_GPS_SBP2::_attempt_state_update()
         state.velocity[1]       = (float)(last_vel_ned.e * 1.0e-3);
         state.velocity[2]       = (float)(last_vel_ned.d * 1.0e-3);
 
-        float ground_vector_sq = state.velocity[0]*state.velocity[0] + state.velocity[1]*state.velocity[1];
-        state.ground_speed = safe_sqrt(ground_vector_sq);
-
-        state.ground_course = wrap_360(degrees(atan2f(state.velocity[1], state.velocity[0])));
+        velocity_to_speed_course(state);
 
         state.speed_accuracy        = safe_sqrt(
                                         powf((float)last_vel_ned.h_accuracy * 1.0e-3f, 2) + 
@@ -437,6 +439,7 @@ AP_GPS_SBP2::_detect(struct SBP2_detect_state &state, uint8_t data)
     return false;
 }
 
+#if HAL_LOGGING_ENABLED
 void
 AP_GPS_SBP2::logging_log_full_update()
 {
@@ -456,55 +459,6 @@ AP_GPS_SBP2::logging_log_full_update()
     };
     AP::logger().WriteBlock(&pkt, sizeof(pkt));
 };
-
-void
-AP_GPS_SBP2::logging_log_raw_sbp(uint16_t msg_type,
-        uint16_t sender_id,
-        uint8_t msg_len,
-        uint8_t *msg_buff) {
-    if (!should_log()) {
-      return;
-    }
-
-    //MASK OUT MESSAGES WE DON'T WANT TO LOG
-    if (( ((uint16_t) gps._sbp_logmask) & msg_type) == 0) {
-        return;
-    }
-
-    uint64_t time_us = AP_HAL::micros64();
-    uint8_t pages = 1;
-
-    if (msg_len > 48) {
-        pages += (msg_len - 48) / 104 + 1;
-    }
-
-    struct log_SbpRAWH pkt = {
-        LOG_PACKET_HEADER_INIT(LOG_MSG_SBPRAWH),
-        time_us         : time_us,
-        msg_type        : msg_type,
-        sender_id       : sender_id,
-        index           : 1,
-        pages           : pages,
-        msg_len         : msg_len,
-    };
-    memcpy(pkt.data, msg_buff, MIN(msg_len, 48));
-    AP::logger().WriteBlock(&pkt, sizeof(pkt));
-
-    for (uint8_t i = 0; i < pages - 1; i++) {
-        struct log_SbpRAWM pkt2 = {
-            LOG_PACKET_HEADER_INIT(LOG_MSG_SBPRAWM),
-            time_us         : time_us,
-            msg_type        : msg_type,
-            sender_id       : sender_id,
-            index           : uint8_t(i + 2),
-            pages           : pages,
-            msg_len         : msg_len,
-        };
-        memcpy(pkt2.data, &msg_buff[48 + i * 104], MIN(msg_len - (48 + i * 104), 104));
-        AP::logger().WriteBlock(&pkt2, sizeof(pkt2));
-    }
-};
-
 void
 AP_GPS_SBP2::logging_ext_event() {
     if (!should_log()) {
@@ -522,3 +476,5 @@ AP_GPS_SBP2::logging_ext_event() {
     };
     AP::logger().WriteBlock(&pkt, sizeof(pkt));
 };
+#endif // HAL_LOGGING_ENABLED
+#endif //AP_GPS_SBP2_ENABLED

@@ -19,9 +19,10 @@
  *  Created on: June 09, 2016
  *      Author: Ian Chen
  */
-#include <AP_HAL/AP_HAL.h>
+#include "AP_IRLock_config.h"
 
-#if CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#if AP_IRLOCK_SITL_GAZEBO_ENABLED
+
 #include "AP_IRLock_SITL_Gazebo.h"
 #include <SITL/SITL.h>
 #include <fcntl.h>
@@ -38,7 +39,7 @@ AP_IRLock_SITL_Gazebo::AP_IRLock_SITL_Gazebo() :
 
 void AP_IRLock_SITL_Gazebo::init(int8_t bus)
 {
-    SITL::SITL *sitl = AP::sitl();
+    SITL::SIM *sitl = AP::sitl();
     // try to bind to a specific port so that if we restart ArduPilot
     // Gazebo keeps sending us packets. Not strictly necessary but
     // useful for debugging
@@ -66,7 +67,7 @@ bool AP_IRLock_SITL_Gazebo::update()
       reply packet sent from simulator to ArduPilot
      */
     struct irlock_packet {
-        uint64_t timestamp;  // in miliseconds
+        uint64_t timestamp;  // in milliseconds
         uint16_t num_targets;
         float pos_x;
         float pos_y;
@@ -92,4 +93,4 @@ bool AP_IRLock_SITL_Gazebo::update()
     return new_data;
 }
 
-#endif // CONFIG_HAL_BOARD == HAL_BOARD_SITL
+#endif  // AP_IRLOCK_SITL_GAZEBO_ENABLED

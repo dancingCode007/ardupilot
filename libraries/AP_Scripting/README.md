@@ -32,24 +32,36 @@ An example script is given below:
 
 ```lua
 function update () -- periodic function that will be called
-  current_pos = ahrs:get_position()
-  home = ahrs:get_home()
-  if current_pos and home then
-    distance = current_pos:get_distance(ahrs:get_home()) -- calculate the distance from home
+  local current_pos = ahrs:get_location() -- fetch the current position of the vehicle
+  local home = ahrs:get_home()            -- fetch the home position of the vehicle
+  if current_pos and home then            -- check that both a vehicle location, and home location are available
+    local distance = current_pos:get_distance(home) -- calculate the distance from home in meters
     if distance > 1000 then -- if more then 1000 meters away
       distance = 1000;      -- clamp the distance to 1000 meters
     end
-    servo.set_output_pwm(96, 1000 + distance) -- set the servo assigned function 96 (scripting3) to a proportional value
+    SRV_Channels:set_output_pwm(96, 1000 + distance) -- set the servo assigned function 96 (scripting3) to a proportional value
   end
 
-  return update, 1000 -- request to be rerun again 1000 milliseconds (1 second) from now
+  return update, 1000 -- request "update" to be rerun again 1000 milliseconds (1 second) from now
 end
 
-return update, 1000 -- request to be rerun again 1000 milliseconds (1 second) from now
+return update, 1000   -- request "update" to be the first time 1000 milliseconds (1 second) after script is loaded
 ```
+
+## Examples
+See the [code examples folder](https://github.com/ArduPilot/ardupilot/tree/master/libraries/AP_Scripting/examples)
 
 ## Working with bindings
 
-Edit bindings.desc
+Edit bindings.desc and rebuild. The waf build will automatically
+re-run the code generator.
 
-cd into the generator subdirectory and type `make run`
+## Lua Source Code
+
+The Lua 5.3.6 source code is vendored in `lua/`. This is a customized
+version of the [official
+distribution](https://www.lua.org/ftp/lua-5.3.6.tar.gz). Where possible,
+differences have been marked of the code.
+
+Lua (not including modifications) is distributed under the terms of the
+MIT license.

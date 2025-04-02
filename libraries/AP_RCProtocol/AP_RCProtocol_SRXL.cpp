@@ -20,6 +20,10 @@
    - 2016.10.23: SRXL variant V1 sucessfully (Testbench and Pixhawk/MissionPlanner) tested with RX-9-DR M-LINK (SW v1.26)
  */
 
+#include "AP_RCProtocol_config.h"
+
+#if AP_RCPROTOCOL_SRXL_ENABLED
+
 #include "AP_RCProtocol_SRXL.h"
 #include <AP_Math/crc.h>
 #include <AP_Math/AP_Math.h>
@@ -230,6 +234,7 @@ void AP_RCProtocol_SRXL::_process_byte(uint32_t timestamp_us, uint8_t byte)
             crc_fmu = crc_xmodem_update(crc_fmu,byte);
         }
         if (buflen == frame_len_full) {
+            log_data(AP_RCProtocol::SRXL, timestamp_us, buffer, buflen);
             /* CRC check here */
             crc_receiver = ((uint16_t)buffer[buflen-2] << 8U) | ((uint16_t)buffer[buflen-1]);
              if (crc_receiver == crc_fmu) {
@@ -280,3 +285,5 @@ void AP_RCProtocol_SRXL::process_byte(uint8_t byte, uint32_t baudrate)
     }
     _process_byte(AP_HAL::micros(), byte);
 }
+
+#endif  // AP_RCPROTOCOL_SRXL_ENABLED

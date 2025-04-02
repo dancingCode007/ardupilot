@@ -19,10 +19,6 @@
 #include "AP_HAL_ChibiOS.h"
 #include "Semaphores.h"
 
-#if HAL_RCINPUT_WITH_AP_RADIO
-#include <AP_Radio/AP_Radio.h>
-#endif
-
 #include <AP_RCProtocol/AP_RCProtocol.h>
 
 #if HAL_USE_ICU == TRUE
@@ -52,11 +48,11 @@ public:
     int16_t get_rssi(void) override {
         return _rssi;
     }
-
-    const char *protocol() const override { return last_protocol; }
+    int16_t get_rx_link_quality(void) override {
+        return _rx_link_quality;
+    }
 
     void _timer_tick(void);
-    bool rc_bind(int dsmMode) override;
 
 private:
     uint16_t _rc_values[RC_INPUT_MAX_CHANNELS] = {0};
@@ -65,16 +61,11 @@ private:
     uint8_t _num_channels;
     Semaphore rcin_mutex;
     int16_t _rssi = -1;
+    int16_t _rx_link_quality = -1;
     uint32_t _rcin_timestamp_last_signal;
     bool _init;
-    const char *last_protocol;
-    bool pulse_input_enabled;
 
-#if HAL_RCINPUT_WITH_AP_RADIO
-    bool _radio_init;
-    AP_Radio *radio;
-    uint32_t last_radio_us;
-#endif
+    bool pulse_input_enabled;
 
 #if HAL_USE_ICU == TRUE
     ChibiOS::SoftSigReader sig_reader;
@@ -82,9 +73,5 @@ private:
 
 #if HAL_USE_EICU == TRUE
     ChibiOS::SoftSigReaderInt sig_reader;
-#endif
-
-#if HAL_WITH_IO_MCU
-    uint32_t last_iomcu_us;
 #endif
 };

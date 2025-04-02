@@ -14,34 +14,19 @@
  */
 #pragma once
 
+#include "AP_Notify_config.h"
+
+#if AP_NOTIFY_NEOPIXEL_ENABLED
+
 #include "RGBLed.h"
+#include "SerialLED.h"
 #include <AP_Common/AP_Common.h>
 
-class NeoPixel: public RGBLed {
+class NeoPixel: public SerialLED {
 public:
     NeoPixel();
 
-    struct {
-        uint8_t b;
-        uint8_t r;
-        uint8_t g;
-    } RGB;
-
-    uint16_t init_ports();
-
-protected:
-    bool hw_init(void) override;
-    bool hw_set_rgb(uint8_t r, uint8_t g, uint8_t b) override;
-
-private:
-    uint16_t enable_mask;
-    uint16_t last_mask;
-
-    // perdiodic tick to re-init
-    uint32_t    _last_init_ms;
-
-    // periodic callback
-    void timer();
-    
-    HAL_Semaphore _sem;
+    uint16_t init_ports() override;
 };
+
+#endif  // AP_NOTIFY_NEOPIXEL_ENABLED
